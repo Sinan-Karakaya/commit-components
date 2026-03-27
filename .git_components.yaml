@@ -1,0 +1,8 @@
+frontend:
+  owners:
+    - team-a
+    - team-b
+backend:
+  owners:
+    - team-c
+    - team-d
