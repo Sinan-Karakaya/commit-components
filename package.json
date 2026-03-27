@@ -4,6 +4,17 @@
   "description": "Commit Components enables you to write detailed commit messages, while leveraging the capabilities of git_components.yaml files",
   "version": "0.0.1",
   "publisher": "FeisarLabs",
+  "repository": {
+    "url": "https://github.com/Sinan-Karakaya/commit-components"
+  },
+  "keywords": [
+    "git",
+    "commit",
+    "gitlint",
+    "git_components",
+    "components"
+  ],
+  "license": "MIT",
   "engines": {
     "vscode": "^1.110.0"
   },
