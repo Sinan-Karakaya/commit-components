@@ -100,6 +100,7 @@ Example:
 
 - If Git is not available, the generated message is copied to the clipboard as fallback.
 - Scope suggestions require `.git_components.yaml` in the workspace root.
+- Gitlint validation is currently experimental and only runs when a `.gitlint` file exists at workspace root.
 
 ## Release Notes
 

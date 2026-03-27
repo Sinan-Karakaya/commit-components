@@ -2,6 +2,8 @@ import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as yaml from 'js-yaml'
+import * as os from 'os'
+import { spawnSync } from 'child_process'
 
 export function activate(context: vscode.ExtensionContext) {
   const disposable = vscode.commands.registerCommand(
@@ -62,9 +64,10 @@ async function promptAndSaveFooter(): Promise<void> {
     return
   }
 
-  const target = vscode.workspace.workspaceFolders?.length
-    ? vscode.ConfigurationTarget.Workspace
-    : vscode.ConfigurationTarget.Global
+  const target = await pickFooterSaveTarget()
+  if (!target) {
+    return
+  }
 
   try {
     await config.update('footer', nextFooter.trim(), target)
@@ -72,6 +75,35 @@ async function promptAndSaveFooter(): Promise<void> {
     const message = err instanceof Error ? err.message : String(err)
     void vscode.window.showErrorMessage(`Could not save footer: ${message}`)
   }
+}
+
+async function pickFooterSaveTarget(): Promise<
+  vscode.ConfigurationTarget | undefined
+> {
+  if (!vscode.workspace.workspaceFolders?.length) {
+    return vscode.ConfigurationTarget.Global
+  }
+
+  const selected = await vscode.window.showQuickPick(
+    [
+      {
+        label: 'Workspace',
+        description: 'Save footer only for this workspace',
+        target: vscode.ConfigurationTarget.Workspace,
+      },
+      {
+        label: 'User (Global)',
+        description: 'Save footer for all VS Code workspaces',
+        target: vscode.ConfigurationTarget.Global,
+      },
+    ],
+    {
+      title: 'Where do you want to save the footer?',
+      ignoreFocusOut: true,
+    },
+  )
+
+  return selected?.target
 }
 
 function getConfiguredFooter(): string {
@@ -247,7 +279,7 @@ class CommitFormPanel {
         footer: string
       }) => {
         if (message.command === 'submit') {
-          this._handleSubmit(
+          void this._handleSubmit(
             message.scope,
             message.title,
             message.description,
@@ -260,7 +292,7 @@ class CommitFormPanel {
     )
   }
 
-  private _handleSubmit(
+  private async _handleSubmit(
     scope: string,
     title: string,
     description: string,
@@ -275,6 +307,11 @@ class CommitFormPanel {
       msg += `\n\n${footer.trim()}`
     }
 
+    const isValid = await this._validateWithGitlint(msg)
+    if (!isValid) {
+      return
+    }
+
     const inputBox = getGitInputBox()
     if (inputBox !== undefined) {
       inputBox.value = msg
@@ -283,6 +320,75 @@ class CommitFormPanel {
     }
 
     this._panel.dispose()
+  }
+
+  private async _validateWithGitlint(message: string): Promise<boolean> {
+    const folders = vscode.workspace.workspaceFolders
+    if (!folders || folders.length === 0) {
+      return true
+    }
+
+    const workspaceRoot = folders[0].uri.fsPath
+    const gitlintConfigPath = path.join(workspaceRoot, '.gitlint')
+    if (!fs.existsSync(gitlintConfigPath)) {
+      return true
+    }
+
+    const tempFile = path.join(
+      os.tmpdir(),
+      `commit-components-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`,
+    )
+
+    try {
+      fs.writeFileSync(tempFile, message, 'utf8')
+      const result = spawnSync('gitlint', ['--msg-filename', tempFile], {
+        cwd: workspaceRoot,
+        encoding: 'utf8',
+      })
+
+      if (result.error) {
+        const pick = await vscode.window.showWarningMessage(
+          'Experimental: A .gitlint file was found, but the gitlint binary is not available in PATH.',
+          'Continue without validation',
+          'Cancel',
+        )
+        return pick === 'Continue without validation'
+      }
+
+      if (result.status === 0) {
+        return true
+      }
+
+      const details = [result.stdout, result.stderr]
+        .filter(Boolean)
+        .join('\n')
+        .trim()
+
+      const messageText = details
+        ? `Experimental gitlint check: commit message does not conform to gitlint rules.\n\n${details}`
+        : 'Experimental gitlint check: commit message does not conform to gitlint rules.'
+
+      const pick = await vscode.window.showWarningMessage(
+        messageText,
+        'Use anyway',
+        'Cancel',
+      )
+      return pick === 'Use anyway'
+    } catch (err) {
+      const messageText = err instanceof Error ? err.message : String(err)
+      const pick = await vscode.window.showWarningMessage(
+        `Experimental gitlint check failed: ${messageText}`,
+        'Continue without validation',
+        'Cancel',
+      )
+      return pick === 'Continue without validation'
+    } finally {
+      try {
+        fs.unlinkSync(tempFile)
+      } catch {
+        // Best effort cleanup
+      }
+    }
   }
 
   private _getScopes(): string[] {

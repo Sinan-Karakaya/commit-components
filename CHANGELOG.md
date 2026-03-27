@@ -6,4 +6,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
-- Initial release
+- Added choice to save footer setting at Workspace or User (Global) level.
+- Added optional experimental gitlint validation for generated commit messages when `.gitlint` exists.
+
+## [0.0.2]
+
+- Added choice to save footer setting at Workspace or User (Global) level.
+- Added optional experimental gitlint validation for generated commit messages when `.gitlint` exists.
