@@ -26,9 +26,13 @@ Commit messages are often rushed. This extension helps you keep quality high wit
 
 Open the commit form directly from the Source Control (Git) view.
 
+![Source Control button](docs/screenshot-source-control.png)
+
 ### Commit form with live preview
 
 Build messages in a clean form and preview the final result as you type.
+
+![Commit form](docs/screenshot-form.png)
 
 Generated format:
 
