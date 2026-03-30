@@ -2,7 +2,7 @@
   "name": "commit-components",
   "displayName": "Commit Components",
   "description": "Commit Components enables you to write detailed commit messages, while leveraging the capabilities of git_components.yaml files",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "FeisarLabs",
   "repository": {
     "url": "https://github.com/Sinan-Karakaya/commit-components"
@@ -22,6 +22,7 @@
     "Other"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onCommand:commitComponents.openForm",
     "onCommand:commitComponents.setFooter"
   ],

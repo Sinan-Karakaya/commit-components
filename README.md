@@ -104,6 +104,14 @@ Example:
 
 ## Release Notes
 
+### 0.0.3
+
+- Auto-generate footer on first install: if `commit.gpgsign = true` is set in your git config, the extension automatically pre-fills `commitComponents.footer` with `Signed-off-by: <name> <email>` from your git identity. If signing is not enabled, no footer is pre-filled.
+
+### 0.0.2
+
+- Keyboard shortcut (`Cmd/Ctrl+Alt+C`), experimental gitlint support, local/global setting scope for footer.
+
 ### 0.0.1
 
 Initial preview release with:

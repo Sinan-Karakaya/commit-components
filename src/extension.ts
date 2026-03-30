@@ -6,6 +6,8 @@ import * as os from 'os'
 import { spawnSync } from 'child_process'
 
 export function activate(context: vscode.ExtensionContext) {
+  void autoConfigureFooterOnInstall(context)
+
   const disposable = vscode.commands.registerCommand(
     'commitComponents.openForm',
     async () => {
@@ -21,6 +23,50 @@ export function activate(context: vscode.ExtensionContext) {
   )
 
   context.subscriptions.push(disposable, setFooterDisposable)
+}
+
+async function autoConfigureFooterOnInstall(
+  context: vscode.ExtensionContext,
+): Promise<void> {
+  const STATE_KEY = 'footerAutoConfigured'
+  if (context.globalState.get<boolean>(STATE_KEY)) {
+    return
+  }
+  await context.globalState.update(STATE_KEY, true)
+
+  if (getConfiguredFooter()) {
+    return
+  }
+
+  const gpgSign = gitConfigGet('commit.gpgsign')
+  if (gpgSign !== 'true' && gpgSign !== '1') {
+    return
+  }
+
+  const name = gitConfigGet('user.name')
+  const email = gitConfigGet('user.email')
+  if (!name || !email) {
+    return
+  }
+
+  const footer = `Signed-off-by: ${name} <${email}>`
+  try {
+    await vscode.workspace
+      .getConfiguration('commitComponents')
+      .update('footer', footer, vscode.ConfigurationTarget.Global)
+  } catch {
+    // Best effort — silently skip if settings cannot be written
+  }
+}
+
+function gitConfigGet(key: string): string {
+  const result = spawnSync('git', ['config', '--get', key], {
+    encoding: 'utf8',
+  })
+  if (result.status !== 0 || result.error) {
+    return ''
+  }
+  return result.stdout.trim()
 }
 
 async function ensureFooterConfigured(): Promise<void> {
