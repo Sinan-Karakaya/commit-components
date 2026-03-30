@@ -4,7 +4,7 @@ Write clear, consistent commit messages directly from Source Control.
 
 Commit Components adds a focused commit form to VS Code so you can build commit messages with:
 
-- optional scope
+- required scope
 - concise title
 - optional body/description
 - optional footer (for sign-off, issue refs, metadata)
@@ -19,6 +19,7 @@ Commit messages are often rushed. This extension helps you keep quality high wit
 - Live commit preview before applying
 - Scope suggestions from your repository YAML
 - Reusable default footer for team conventions
+- Generate title and description from your staged diff using GitHub Copilot
 
 ## Features
 
@@ -44,7 +45,9 @@ Generated format:
 <footer>
 ```
 
-If scope is empty, the first line becomes just the title.
+### Copilot-assisted generation
+
+Click **Generate with Copilot** in the form to automatically pre-fill the title and description from your staged diff. Requires the GitHub Copilot extension to be installed and signed in.
 
 ### Scope autoload from YAML
 
@@ -99,14 +102,21 @@ Example:
 
 - A Git repository open in VS Code.
 - Built-in Git extension enabled.
+- GitHub Copilot extension (optional, for Copilot-assisted generation).
 
 ## Notes
 
 - If Git is not available, the generated message is copied to the clipboard as fallback.
 - Scope suggestions require `.git_components.yaml` in the workspace root.
+- Copilot generation requires staged changes and GitHub Copilot to be active.
 - Gitlint validation is currently experimental and only runs when a `.gitlint` file exists at workspace root.
 
 ## Release Notes
+
+### 0.0.4
+
+- Scope field is now required — commit messages always include a scope prefix.
+- Added **Generate with Copilot**: pre-fills title and description from staged diff using GitHub Copilot.
 
 ### 0.0.3
 

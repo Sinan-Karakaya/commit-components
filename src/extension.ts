@@ -331,6 +331,8 @@ class CommitFormPanel {
             message.description,
             message.footer,
           )
+        } else if (message.command === 'generateWithCopilot') {
+          void this._generateWithCopilot()
         }
       },
       null,
@@ -344,7 +346,7 @@ class CommitFormPanel {
     description: string,
     footer: string,
   ) {
-    const firstLine = scope ? `${scope}: ${title}` : title
+    const firstLine = `${scope}: ${title}`
     let msg = firstLine
     if (description.trim()) {
       msg += `\n\n${description.trim()}`
@@ -434,6 +436,97 @@ class CommitFormPanel {
       } catch {
         // Best effort cleanup
       }
+    }
+  }
+
+  private _getStagedDiff(): string {
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+    const result = spawnSync('git', ['diff', '--staged'], {
+      encoding: 'utf8',
+      cwd,
+    })
+    if (result.error || result.status !== 0) {
+      return ''
+    }
+    return result.stdout.trim()
+  }
+
+  private async _generateWithCopilot(): Promise<void> {
+    const postDone = () =>
+      void this._panel.webview.postMessage({ command: 'copilotDone' })
+
+    const diff = this._getStagedDiff()
+    if (!diff) {
+      void vscode.window.showWarningMessage(
+        'No staged changes found. Stage some files before generating a commit message.',
+      )
+      postDone()
+      return
+    }
+
+    let models: vscode.LanguageModelChat[]
+    try {
+      models = await vscode.lm.selectChatModels({ vendor: 'copilot' })
+    } catch {
+      void vscode.window.showErrorMessage(
+        'Could not access Copilot language models.',
+      )
+      postDone()
+      return
+    }
+
+    if (models.length === 0) {
+      void vscode.window.showErrorMessage(
+        'No Copilot language models available. Make sure GitHub Copilot is installed and signed in.',
+      )
+      postDone()
+      return
+    }
+
+    const model = models[0]
+    const prompt = `You are a git commit message assistant.
+Given the staged diff below, generate a conventional commit message.
+
+Respond with ONLY a valid JSON object — no markdown, no explanation:
+{"title": "<imperative title, max 72 chars, no scope, or tasks type such as feat, fix etc...>", "description": "<optional multi-line body, empty string if not needed>"}
+
+Staged diff:
+\`\`\`
+${diff.slice(0, 8000)}
+\`\`\``
+
+    try {
+      const cts = new vscode.CancellationTokenSource()
+      const response = await model.sendRequest(
+        [vscode.LanguageModelChatMessage.User(prompt)],
+        {},
+        cts.token,
+      )
+
+      let text = ''
+      for await (const chunk of response.text) {
+        text += chunk
+      }
+
+      const jsonMatch = text.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) {
+        throw new Error('Unexpected response format from Copilot.')
+      }
+
+      const parsed = JSON.parse(jsonMatch[0]) as {
+        title?: string
+        description?: string
+      }
+
+      void this._panel.webview.postMessage({
+        command: 'copilotResult',
+        title: parsed.title ?? '',
+        description: parsed.description ?? '',
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      void vscode.window.showErrorMessage(`Copilot generation failed: ${msg}`)
+      postDone()
     }
   }
 
@@ -601,6 +694,32 @@ class CommitFormPanel {
     font-size: 0.8em;
     opacity: 0.6;
   }
+
+  .field-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .copilot-btn {
+    background: transparent;
+    color: var(--vscode-textLink-foreground);
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    font-size: 0.8em;
+    font-family: inherit;
+    line-height: 1;
+  }
+
+  .copilot-btn:hover:not(:disabled) {
+    text-decoration: underline;
+  }
+
+  .copilot-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
 </style>
 </head>
 <body>
@@ -608,12 +727,15 @@ class CommitFormPanel {
 <form id="form" novalidate>
 
   <div class="field">
-    <label for="scope">Scope</label>
+    <label for="scope">Scope <span class="req">*</span></label>
     ${scopeField}
   </div>
 
   <div class="field">
-    <label for="title">Title <span class="req">*</span></label>
+    <div class="field-header">
+      <label for="title">Title <span class="req">*</span></label>
+      <button type="button" id="copilotBtn" class="copilot-btn">Generate with Copilot</button>
+    </div>
     <input type="text" id="title" placeholder="Short, imperative description of the change" autocomplete="off" />
   </div>
 
@@ -648,6 +770,7 @@ class CommitFormPanel {
   const footerEl      = document.getElementById('footer');
   const previewEl     = document.getElementById('preview');
   const submitBtn     = document.getElementById('submitBtn');
+  const copilotBtn    = document.getElementById('copilotBtn');
 
   function buildMessage() {
     const scope       = scopeEl.value.trim();
@@ -655,9 +778,9 @@ class CommitFormPanel {
     const description = descriptionEl.value.trim();
     const footer      = footerEl.value.trim();
 
-    if (!title) { return null; }
+    if (!scope || !title) { return null; }
 
-    const firstLine = scope ? scope + ': ' + title : title;
+    const firstLine = scope + ': ' + title;
     let msg = firstLine;
     if (description) { msg += '\\n\\n' + description; }
     if (footer)      { msg += '\\n\\n' + footer; }
@@ -680,6 +803,26 @@ class CommitFormPanel {
   [scopeEl, titleEl, descriptionEl, footerEl].forEach(el => {
     el.addEventListener('input',  update);
     el.addEventListener('change', update);
+  });
+
+  copilotBtn.addEventListener('click', function () {
+    copilotBtn.disabled = true;
+    copilotBtn.textContent = 'Generating…';
+    vscode.postMessage({ command: 'generateWithCopilot' });
+  });
+
+  window.addEventListener('message', function (event) {
+    const msg = event.data;
+    if (msg.command === 'copilotResult') {
+      titleEl.value = msg.title || '';
+      descriptionEl.value = msg.description || '';
+      update();
+      copilotBtn.disabled = false;
+      copilotBtn.textContent = 'Generate with Copilot';
+    } else if (msg.command === 'copilotDone') {
+      copilotBtn.disabled = false;
+      copilotBtn.textContent = 'Generate with Copilot';
+    }
   });
 
   document.getElementById('form').addEventListener('submit', function (e) {
