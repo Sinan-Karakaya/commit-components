@@ -165,7 +165,39 @@ export function deactivate() {}
 // YAML parsing
 // ---------------------------------------------------------------------------
 
-function parseScopes(filePath: string): string[] {
+interface ScopeItem {
+  name: string
+  owner?: string
+}
+
+function extractOwner(record: Record<string, unknown>): string | undefined {
+  // singular string: owner: "team-a"
+  if (typeof record['owner'] === 'string' && record['owner'].trim() !== '') {
+    return record['owner'].trim()
+  }
+  // plural array: owners: [team-a, team-b]
+  if (Array.isArray(record['owners'])) {
+    const names = record['owners']
+      .filter((o): o is string => typeof o === 'string' && o.trim() !== '')
+      .map((o) => o.trim())
+    if (names.length > 0) {
+      return names.join(', ')
+    }
+  }
+  return undefined
+}
+
+function itemFromYaml(item: unknown): ScopeItem | null {
+  if (typeof item === 'string' && item.trim() !== '') {
+    return { name: item.trim() }
+  }
+  if (isRecord(item) && typeof item['name'] === 'string' && item['name'].trim() !== '') {
+    return { name: item['name'].trim(), owner: extractOwner(item) }
+  }
+  return null
+}
+
+function parseScopes(filePath: string): ScopeItem[] {
   let content: string
   try {
     content = fs.readFileSync(filePath, 'utf8')
@@ -180,17 +212,9 @@ function parseScopes(filePath: string): string[] {
     return []
   }
 
-  // Simple array of strings: ["frontend", "backend", ...]
+  // Simple array of strings or objects: ["frontend", {name: "backend", owner: "team"}]
   if (Array.isArray(parsed)) {
-    return parsed
-      .map((item) =>
-        typeof item === 'string'
-          ? item
-          : isRecord(item) && typeof item['name'] === 'string'
-            ? item['name']
-            : null,
-      )
-      .filter((s): s is string => s !== null && s.trim() !== '')
+    return parsed.map(itemFromYaml).filter((s): s is ScopeItem => s !== null)
   }
 
   if (!isRecord(parsed)) {
@@ -210,22 +234,22 @@ function parseScopes(filePath: string): string[] {
     const value = parsed[key]
     if (Array.isArray(value)) {
       const result = value
-        .map((item) =>
-          typeof item === 'string'
-            ? item
-            : isRecord(item) && typeof item['name'] === 'string'
-              ? item['name']
-              : null,
-        )
-        .filter((s): s is string => s !== null && s.trim() !== '')
+        .map(itemFromYaml)
+        .filter((s): s is ScopeItem => s !== null)
       if (result.length > 0) {
         return result
       }
     }
   }
 
-  // Fallback: use the top-level keys themselves as scopes
-  return Object.keys(parsed).filter((k) => k.trim() !== '')
+  // Fallback: use the top-level keys as scopes, read owner(s) from values
+  return Object.keys(parsed)
+    .filter((k) => k.trim() !== '')
+    .map((k) => {
+      const val = parsed[k]
+      const owner = isRecord(val) ? extractOwner(val) : undefined
+      return { name: k, owner }
+    })
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -323,6 +347,8 @@ class CommitFormPanel {
         title: string
         description: string
         footer: string
+        type: string
+        format: 'simple' | 'conventional'
       }) => {
         if (message.command === 'submit') {
           void this._handleSubmit(
@@ -330,6 +356,8 @@ class CommitFormPanel {
             message.title,
             message.description,
             message.footer,
+            message.type,
+            message.format,
           )
         } else if (message.command === 'generateWithCopilot') {
           void this._generateWithCopilot()
@@ -345,8 +373,16 @@ class CommitFormPanel {
     title: string,
     description: string,
     footer: string,
+    type: string,
+    format: 'simple' | 'conventional',
   ) {
-    const firstLine = `${scope}: ${title}`
+    const noScope = scope === '__no_scope__'
+    let firstLine: string
+    if (format === 'conventional') {
+      firstLine = noScope ? `${type}: ${title}` : `${type}(${scope}): ${title}`
+    } else {
+      firstLine = noScope ? title : `${scope}: ${title}`
+    }
     let msg = firstLine
     if (description.trim()) {
       msg += `\n\n${description.trim()}`
@@ -530,34 +566,57 @@ ${diff.slice(0, 8000)}
     }
   }
 
-  private _getScopes(): string[] {
+  private _getScopes(): ScopeItem[] {
     const folders = vscode.workspace.workspaceFolders
-    if (!folders || folders.length === 0) {
-      return []
+    if (folders && folders.length > 0) {
+      const yamlPath = path.join(folders[0].uri.fsPath, '.git_components.yaml')
+      if (fs.existsSync(yamlPath)) {
+        const yamlScopes = parseScopes(yamlPath)
+        if (yamlScopes.length > 0) {
+          return yamlScopes
+        }
+      }
     }
-    const yamlPath = path.join(folders[0].uri.fsPath, '.git_components.yaml')
-    if (!fs.existsSync(yamlPath)) {
-      return []
-    }
-    return parseScopes(yamlPath)
+    return vscode.workspace
+      .getConfiguration('commitComponents')
+      .get<string[]>('scopes', [])
+      .filter((s) => s.trim() !== '')
+      .map((s) => ({ name: s.trim() }))
   }
 
   private _refresh() {
     const scopes = this._getScopes()
-    const footer = vscode.workspace
-      .getConfiguration('commitComponents')
-      .get<string>('footer', '')
-    this._panel.webview.html = this._buildHtml(scopes, footer)
+    const config = vscode.workspace.getConfiguration('commitComponents')
+    const footer = config.get<string>('footer', '')
+    const defaultFormat = config.get<string>('defaultFormat', 'simple') as
+      | 'simple'
+      | 'conventional'
+    this._panel.webview.html = this._buildHtml(scopes, footer, defaultFormat)
   }
 
-  private _buildHtml(scopes: string[], footer: string): string {
+  private _buildHtml(
+    scopes: ScopeItem[],
+    footer: string,
+    defaultFormat: 'simple' | 'conventional',
+  ): string {
     const scopeField =
       scopes.length > 0
         ? `<select id="scope">
                  <option value="">— select scope —</option>
-                 ${scopes.map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('\n                 ')}
-               </select>`
+                 ${scopes
+                   .map((s) => {
+                     const ownerAttr = s.owner
+                       ? ` data-owner="${escapeHtml(s.owner)}"`
+                       : ''
+                     return `<option value="${escapeHtml(s.name)}"${ownerAttr}>${escapeHtml(s.name)}</option>`
+                   })
+                   .join('\n                 ')}
+                 <option value="__no_scope__">— No scope —</option>
+               </select>
+               <span class="scope-note" id="scopeNote"></span>`
         : `<input type="text" id="scope" placeholder="feat, fix, docs, refactor…" />`
+
+    const isConventional = defaultFormat === 'conventional'
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -720,11 +779,75 @@ ${diff.slice(0, 8000)}
     opacity: 0.5;
     cursor: not-allowed;
   }
+
+  .scope-note {
+    font-size: 0.8em;
+    opacity: 0.65;
+    display: none;
+  }
+
+  .scope-note.visible {
+    display: block;
+  }
+
+  .format-tabs {
+    display: flex;
+    margin-bottom: 20px;
+    border: 1px solid var(--vscode-input-border, transparent);
+    border-radius: 2px;
+    overflow: hidden;
+    width: fit-content;
+  }
+
+  .format-tab {
+    background: var(--vscode-input-background);
+    color: var(--vscode-foreground);
+    border: none;
+    padding: 5px 14px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.85em;
+    font-weight: 500;
+    opacity: 0.7;
+  }
+
+  .format-tab.active {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    opacity: 1;
+  }
+
+  .format-tab:hover:not(.active) {
+    opacity: 1;
+  }
 </style>
 </head>
 <body>
 <h1>Commit Helper</h1>
 <form id="form" novalidate>
+
+  <div class="format-tabs">
+    <button type="button" class="format-tab${!isConventional ? ' active' : ''}" data-format="simple">Simple</button>
+    <button type="button" class="format-tab${isConventional ? ' active' : ''}" data-format="conventional">Conventional</button>
+  </div>
+
+  <div class="field" id="typeField"${!isConventional ? ' style="display:none"' : ''}>
+    <label for="commitType">Type <span class="req">*</span></label>
+    <select id="commitType">
+      <option value="">— select type —</option>
+      <option value="feat">feat</option>
+      <option value="fix">fix</option>
+      <option value="ci">ci</option>
+      <option value="docs">docs</option>
+      <option value="refactor">refactor</option>
+      <option value="test">test</option>
+      <option value="chore">chore</option>
+      <option value="perf">perf</option>
+      <option value="style">style</option>
+      <option value="build">build</option>
+      <option value="revert">revert</option>
+    </select>
+  </div>
 
   <div class="field">
     <label for="scope">Scope <span class="req">*</span></label>
@@ -765,29 +888,68 @@ ${diff.slice(0, 8000)}
   const vscode = acquireVsCodeApi();
 
   const scopeEl       = document.getElementById('scope');
+  const scopeNote     = document.getElementById('scopeNote');
+  const typeEl        = document.getElementById('commitType');
   const titleEl       = document.getElementById('title');
   const descriptionEl = document.getElementById('description');
   const footerEl      = document.getElementById('footer');
   const previewEl     = document.getElementById('preview');
   const submitBtn     = document.getElementById('submitBtn');
   const copilotBtn    = document.getElementById('copilotBtn');
+  const typeField     = document.getElementById('typeField');
+
+  let currentFormat = '${defaultFormat}';
+
+  document.querySelectorAll('.format-tab').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      currentFormat = btn.dataset.format;
+      document.querySelectorAll('.format-tab').forEach(function (b) {
+        b.classList.toggle('active', b.dataset.format === currentFormat);
+      });
+      typeField.style.display = currentFormat === 'conventional' ? '' : 'none';
+      update();
+    });
+  });
 
   function buildMessage() {
     const scope       = scopeEl.value.trim();
     const title       = titleEl.value.trim();
     const description = descriptionEl.value.trim();
     const footer      = footerEl.value.trim();
+    const type        = typeEl.value.trim();
+    const noScope     = scope === '__no_scope__';
 
     if (!scope || !title) { return null; }
+    if (currentFormat === 'conventional' && !type) { return null; }
 
-    const firstLine = scope + ': ' + title;
+    let firstLine;
+    if (currentFormat === 'conventional') {
+      firstLine = noScope ? type + ': ' + title : type + '(' + scope + '): ' + title;
+    } else {
+      firstLine = noScope ? title : scope + ': ' + title;
+    }
+
     let msg = firstLine;
     if (description) { msg += '\\n\\n' + description; }
     if (footer)      { msg += '\\n\\n' + footer; }
     return msg;
   }
 
+  function updateScopeNote() {
+    if (!scopeNote) { return; }
+    const selected = scopeEl.options && scopeEl.options[scopeEl.selectedIndex];
+    const owner = selected ? selected.dataset.owner : '';
+    if (owner) {
+      scopeNote.textContent = 'Owners: ' + owner;
+      scopeNote.classList.add('visible');
+    } else {
+      scopeNote.textContent = '';
+      scopeNote.classList.remove('visible');
+    }
+  }
+
   function update() {
+    updateScopeNote();
     const msg = buildMessage();
     if (msg) {
       previewEl.textContent = msg;
@@ -800,7 +962,7 @@ ${diff.slice(0, 8000)}
     }
   }
 
-  [scopeEl, titleEl, descriptionEl, footerEl].forEach(el => {
+  [scopeEl, typeEl, titleEl, descriptionEl, footerEl].forEach(function (el) {
     el.addEventListener('input',  update);
     el.addEventListener('change', update);
   });
@@ -835,6 +997,8 @@ ${diff.slice(0, 8000)}
       title:       titleEl.value.trim(),
       description: descriptionEl.value.trim(),
       footer:      footerEl.value.trim(),
+      type:        typeEl.value.trim(),
+      format:      currentFormat,
     });
   });
 
